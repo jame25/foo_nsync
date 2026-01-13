@@ -48,13 +48,13 @@ A C++ component for foobar2000 that:
 
 ### 1. Server Setup
 
-Navigate to the `playlist_sync/server` directory.
+Navigate to the `server` directory.
 
 **Prerequisites**: Python 3.9+ (or Docker & Docker Compose).
 
 #### Option A: Run directly
 ```bash
-cd playlist_sync/server
+cd server
 python main.py
 ```
 
@@ -110,7 +110,7 @@ Ensure port `8090` (default) is accessible from your client machine.
 2.  Navigate to **Tools > Playlist Sync**.
 3.  Click **Add** to create a new sync job.
 4.  Fill in the details:
-    *   **Server URL**: `http://<server-ip>:8092` (e.g., `http://192.168.1.50:8092`)
+    *   **Server URL**: `http://<server-ip>:8090` (e.g., `http://192.168.1.50:8090`)
     *   **Playlist Name**: The name of the playlist file on the server *without extension* (e.g., `music`).
     *   **Target Playlist**: The name you want it to appear as in foobar2000.
     *   **Enable**: Check this box.
