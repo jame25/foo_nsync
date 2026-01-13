@@ -1,0 +1,20 @@
+{
+    "playlist_dir": "/data",
+    "sources": [
+        {
+            "name": "music",
+            "path": "/mnt/Music1",
+            "recursive": true
+        },
+        {
+            "name": "more_music",
+            "path": "/mnt/Music2",
+            "recursive": true
+        },
+        {
+            "name": "even_more_music",
+            "path": "/mnt/Music3",
+            "recursive": true
+        }
+    ]
+}

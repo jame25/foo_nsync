@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  # NSync Server - serves playlists over HTTP
+  nsync_server:
+    build: .
+    container_name: nsync_server
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8090}:8090"
+    volumes:
+      - ${PLAYLIST_DIR:-./playlists}:/data:ro
+      - ./config:/config:ro
+      # Music directories - add or remove as needed
+      - ${MUSIC_DIR_1}:/mnt/Music1:ro
+      - ${MUSIC_DIR_2}:/mnt/Music2:ro
+      - ${MUSIC_DIR_3}:/mnt/Music3:ro
+      # - ${MUSIC_DIR_4}:/mnt/Music4:ro
+    environment:
+      - PORT=8090
+      - BIND_ADDRESS=0.0.0.0
+      - PLAYLIST_DIR=/data
+      - CONFIG_DIR=/config
+      - LOG_LEVEL=INFO
+    depends_on:
+      - playlist_generator
+
+  # Playlist Generator - monitors folders and creates .m3u8 files
+  playlist_generator:
+    build: .
+    container_name: nsync_generator
+    restart: unless-stopped
+    entrypoint: ["python", "generate_playlists.py", "--watch"]
+    volumes:
+      - ${PLAYLIST_DIR:-./playlists}:/data
+      - ./config:/config:ro
+      # Music directories - must match nsync_server mounts
+      - ${MUSIC_DIR_1}:/mnt/Music1:ro
+      - ${MUSIC_DIR_2}:/mnt/Music2:ro
+      - ${MUSIC_DIR_3}:/mnt/Music3:ro
+      # - ${MUSIC_DIR_4}:/mnt/Music4:ro
+    environment:
+      - PLAYLIST_DIR=/data
+      - CONFIG_DIR=/config
+      - WATCH_INTERVAL=${WATCH_INTERVAL:-300}
