@@ -22,12 +22,10 @@ static void mark_url_failed(const char* url) {
     g_failed_urls.insert(pfc::string8(url));
 }
 
-// Log when the component initializes to verify it's loaded
+// Cleanup on quit
 class nsync_artwork_initquit : public initquit {
 public:
-    void on_init() override {
-        console::formatter() << "foo_nsync [art]: Album art extractor and fallback services REGISTERED";
-    }
+    void on_init() override {}
     void on_quit() override {
         std::lock_guard<std::mutex> lock(g_failed_urls_mutex);
         g_failed_urls.clear();
@@ -73,8 +71,6 @@ nsync_artwork_extractor_instance::nsync_artwork_extractor_instance(const char* s
     : m_stream_url(stream_url)
 {
     m_artwork_url = stream_url_to_artwork_url(stream_url);
-    console::formatter() << "foo_nsync [art]: Instance created for: " << m_stream_url;
-    console::formatter() << "foo_nsync [art]: Artwork URL: " << m_artwork_url;
 }
 
 album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, abort_callback& p_abort) {
@@ -97,17 +93,14 @@ album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, a
 
     // Check if this URL previously failed (avoid repeated timeouts)
     if (is_url_failed(m_artwork_url.c_str())) {
-        console::formatter() << "foo_nsync [art]: Skipping previously failed URL: " << m_artwork_url;
         throw exception_album_art_not_found();
     }
 
     // Fetch artwork from server
-    console::formatter() << "foo_nsync [art]: Fetching artwork: " << m_artwork_url;
     pfc::array_t<uint8_t> image_data;
     pfc::string8 error;
 
     if (!nsync_http_client::get().get_binary_sync(m_artwork_url.c_str(), image_data, error)) {
-        console::formatter() << "foo_nsync [art]: FAILED: " << error;
         mark_url_failed(m_artwork_url.c_str());
         throw exception_album_art_not_found();
     }
@@ -119,8 +112,6 @@ album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, a
 
     // Create album art data from the fetched image
     m_cached_art = album_art_data_impl::g_create(image_data.get_ptr(), image_data.get_size());
-
-    console::formatter() << "foo_nsync [art]: SUCCESS - " << (int)image_data.get_size() << " bytes";
 
     return m_cached_art;
 }
@@ -140,24 +131,17 @@ album_art_path_list::ptr nsync_artwork_extractor_instance::query_paths(const GUI
 
 bool nsync_artwork_extractor::is_our_path(const char* p_path, const char* p_extension) {
     (void)p_extension;
-
-    bool result = is_nsync_stream_url(p_path);
-    console::formatter() << "foo_nsync [art]: is_our_path('" << (p_path ? p_path : "null") << "') = " << (result ? "YES" : "NO");
-    return result;
+    return is_nsync_stream_url(p_path);
 }
 
 album_art_extractor_instance_ptr nsync_artwork_extractor::open(file_ptr p_filehint, const char* p_path, abort_callback& p_abort) {
     (void)p_filehint;
     p_abort.check();
 
-    console::formatter() << "foo_nsync [art]: extractor open() called for: " << p_path;
-
     if (!is_nsync_stream_url(p_path)) {
-        console::formatter() << "foo_nsync [art]: open() - not our path, throwing unsupported";
         throw exception_album_art_unsupported_format();
     }
 
-    console::formatter() << "foo_nsync [art]: open() - creating extractor instance";
     return new service_impl_t<nsync_artwork_extractor_instance>(p_path);
 }
 
@@ -168,22 +152,16 @@ album_art_extractor_instance_v2::ptr nsync_artwork_fallback::open(
     pfc::list_base_const_t<GUID> const& ids,
     abort_callback& abort)
 {
-    console::formatter() << "foo_nsync [art]: FALLBACK open() called with " << items.get_count() << " items";
-
     // Look for an nsync stream URL in the items
     for (size_t i = 0; i < items.get_count(); ++i) {
         abort.check();
 
         const char* path = items[i]->get_path();
-        console::formatter() << "foo_nsync [art]: FALLBACK checking item " << i << ": " << path;
-
         if (is_nsync_stream_url(path)) {
-            console::formatter() << "foo_nsync [art]: FALLBACK found nsync URL, creating instance";
             return new service_impl_t<nsync_artwork_extractor_instance>(path);
         }
     }
 
-    console::formatter() << "foo_nsync [art]: FALLBACK no nsync URLs found";
     throw exception_album_art_not_found();
 }
 
