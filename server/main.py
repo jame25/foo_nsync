@@ -94,12 +94,6 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
         self.handle_request(send_body=False)
 
     def handle_request(self, send_body=True):
-        # Log every request
-        logger.info(f"Incoming {'GET' if send_body else 'HEAD'}: {self.path}")
-        range_header = self.headers.get('Range')
-        if range_header:
-            logger.info(f"  Range Header: {range_header}")
-
         if self.path == '/status':
             self.send_response(200)
             self.end_headers()
@@ -188,45 +182,26 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         elif self.path.startswith('/artwork/'):
-            # NEW: Dedicated artwork endpoint
+            # Dedicated artwork endpoint
             # /artwork/path/to/audio/file.flac -> searches for artwork in same directory
             import urllib.parse
             audio_path_encoded = self.path[9:]  # Remove '/artwork/'
             audio_path = urllib.parse.unquote(audio_path_encoded.split('?')[0])
 
-            logger.info(f"[ARTWORK] Raw path from URL: {audio_path_encoded}")
-            logger.info(f"[ARTWORK] Decoded path: {audio_path}")
-
             # Ensure path starts with / (absolute path)
             if not audio_path.startswith('/'):
                 audio_path = '/' + audio_path
-                logger.info(f"[ARTWORK] Added leading slash: {audio_path}")
 
             try:
                 audio_file = Path(audio_path)
-                logger.info(f"[ARTWORK] Looking for audio file: {audio_file}")
-                logger.info(f"[ARTWORK] Audio file exists: {audio_file.exists()}")
 
                 if audio_file.exists() and audio_file.is_file():
-                    logger.info(f"[ARTWORK] Audio file found, searching for artwork in: {audio_file.parent}")
-
-                    # List directory contents for debugging
-                    try:
-                        dir_contents = list(audio_file.parent.iterdir())
-                        logger.info(f"[ARTWORK] Directory contains {len(dir_contents)} items:")
-                        for item in dir_contents[:20]:  # Limit to first 20
-                            logger.info(f"[ARTWORK]   - {item.name}")
-                    except Exception as e:
-                        logger.error(f"[ARTWORK] Failed to list directory: {e}")
-
                     artwork = find_artwork_in_directory(audio_file.parent)
                     if artwork:
-                        logger.info(f"[ARTWORK] SUCCESS - Found artwork: {artwork}")
                         with open(artwork, 'rb') as f:
                             content = f.read()
 
                         mime_type = mimetypes.guess_type(str(artwork))[0] or 'image/jpeg'
-                        logger.info(f"[ARTWORK] Serving {len(content)} bytes, mime: {mime_type}")
 
                         self.send_response(200)
                         self.send_header('Content-type', mime_type)
@@ -237,14 +212,10 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
                         if send_body:
                             self.wfile.write(content)
                         return
-                    else:
-                        logger.warning(f"[ARTWORK] No artwork found in {audio_file.parent}")
-                else:
-                    logger.warning(f"[ARTWORK] Audio file does NOT exist: {audio_file}")
 
                 self.send_error(404, "Artwork not found")
             except Exception as e:
-                logger.error(f"[ARTWORK] Exception: {e}", exc_info=True)
+                logger.error(f"Artwork error: {e}")
                 self.send_error(500, str(e))
             return
 
@@ -254,27 +225,25 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
             import urllib.parse
             path_no_query = self.path.split('?')[0]
             query_params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            
+
             # Check if artwork is explicitly requested via query parameter
             if 'artwork' in query_params or 'cover' in query_params or 'art' in query_params:
                 audio_path = urllib.parse.unquote(path_no_query[7:])  # Remove /stream/
-                logger.info(f"Artwork query parameter detected for: {audio_path}")
-                
+
                 try:
                     audio_file = Path(audio_path)
                     if audio_file.exists() and audio_file.is_file():
                         artwork = find_artwork_in_directory(audio_file.parent)
                         if artwork:
-                            logger.info(f"  -> Serving artwork: {artwork}")
                             with open(artwork, 'rb') as f:
                                 content = f.read()
-                            
+
                             self.send_response(200)
                             self.send_header('Content-type', mimetypes.guess_type(str(artwork))[0] or 'image/jpeg')
                             self.send_header('Content-Length', str(len(content)))
                             self.send_header('Cache-Control', 'public, max-age=86400')
                             self.end_headers()
-                            
+
                             if send_body:
                                 self.wfile.write(content)
                             return
@@ -359,20 +328,16 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
         if path.startswith('/stream/'):
             # Decode URL path
             import urllib.parse
-            import os
-            
+
             # Remove query string if any
             path_no_query = path.split('?')[0]
-            clean_path = urllib.parse.unquote(path_no_query[7:]) # Strip /stream
+            clean_path = urllib.parse.unquote(path_no_query[7:])  # Strip /stream
             p = Path(clean_path)
-            
-            logger.info(f"Resolving: input='{path}', clean='{clean_path}'")
-            
+
             # If exact path exists, return it
             if p.exists():
-                logger.info("  -> Found Exact")
                 return str(p)
-                
+
             # Try case-insensitive lookup
             # This handles cover.jpg vs Cover.jpg vs COVER.JPG differences
             try:
@@ -381,14 +346,12 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
                     target_name = p.name.lower()
                     for item in parent.iterdir():
                         if item.name.lower() == target_name:
-                            logger.info(f"  -> Found Case-Insensitive: {item}")
                             return str(item)
             except Exception as e:
                 self.log_error(f"Path resolution error for {clean_path}: {e}")
-                
-            logger.warning(f"  -> Not Found. Parent exists? {p.parent.exists()}")
+
             return clean_path
-        
+
         # Fallback for other files
         return super().translate_path(path)
 
