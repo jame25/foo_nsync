@@ -3,7 +3,7 @@
 // Component version information
 DECLARE_COMPONENT_VERSION(
     "Playlist Sync",
-    "1.0.1",
+    "1.0.2",
     "Syncs playlists from a remote server.\n\n"
     "Configure sync jobs in Preferences > Tools > Playlist Sync.\n\n"
     "Server endpoints:\n"
