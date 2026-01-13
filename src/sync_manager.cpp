@@ -16,22 +16,17 @@ sync_manager& sync_manager::get() {
 }
 
 void sync_manager::start() {
-    console::print("foo_nsync: Initializing...");
-    
     auto& config = sync_config::get();
     m_syncing.resize(config.get_job_count(), false);
-    
+
     if (config.is_enabled() && config.get_job_count() > 0) {
         start_timer();
         // Initial sync on startup
         sync_all();
     }
-    
-    console::formatter() << "foo_nsync: " << config.get_job_count() << " sync job(s) configured";
 }
 
 void sync_manager::stop() {
-    console::print("foo_nsync: Shutting down...");
     stop_timer();
 }
 
@@ -210,8 +205,7 @@ void sync_manager::check_and_sync_job(size_t job_index) {
                     config.save();
                     
                     m_syncing[job_index] = false;
-                    console::formatter() << "foo_nsync: Updated playlist '" << job.target_playlist << "'";
-                    
+
                     // Notify completion
                     for (size_t i = 0; i < m_callbacks.get_count(); ++i) {
                         m_callbacks[i]->on_sync_complete(job_index, "OK");
@@ -321,8 +315,6 @@ void sync_manager::update_playlist(const SyncJob& job, const pfc::string8& playl
     
     // Use simpler AddLocations approach via playlist API
     api->playlist_add_locations(playlist_index, locations, false, nullptr);
-    
-    console::formatter() << "foo_nsync: Added " << file_paths.get_count() << " items to '" << job.target_playlist << "'";
 }
 
 // Initquit service to manage sync_manager lifecycle
