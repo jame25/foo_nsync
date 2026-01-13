@@ -6,6 +6,8 @@ import os
 import json
 import logging
 from pathlib import Path
+from functools import lru_cache
+import threading
 
 # CONFIGURATION (via environment variables)
 PORT = int(os.environ.get("PORT", 8090))
@@ -65,6 +67,53 @@ mimetypes.add_type('image/jpeg', '.jpeg')
 mimetypes.add_type('image/png', '.png')
 mimetypes.add_type('image/gif', '.gif')
 mimetypes.add_type('image/bmp', '.bmp')
+
+# Artwork cache - keyed by directory path, stores (content_bytes, mime_type)
+_artwork_cache = {}
+_artwork_cache_lock = threading.Lock()
+ARTWORK_CACHE_MAX_SIZE = 500  # Max cached directories
+
+
+def get_cached_artwork(directory: Path):
+    """Get artwork from cache or load from disk. Returns (content, mime_type) or (None, None)."""
+    cache_key = str(directory)
+
+    # Check cache first (fast path)
+    with _artwork_cache_lock:
+        if cache_key in _artwork_cache:
+            return _artwork_cache[cache_key]
+
+    # Not in cache - find and load artwork
+    artwork_path = find_artwork_in_directory(directory)
+    if not artwork_path:
+        # Cache negative result too (avoid repeated disk scans)
+        with _artwork_cache_lock:
+            if len(_artwork_cache) >= ARTWORK_CACHE_MAX_SIZE:
+                # Simple eviction: clear half the cache
+                keys = list(_artwork_cache.keys())[:len(_artwork_cache) // 2]
+                for k in keys:
+                    del _artwork_cache[k]
+            _artwork_cache[cache_key] = (None, None)
+        return (None, None)
+
+    # Load artwork content
+    try:
+        with open(artwork_path, 'rb') as f:
+            content = f.read()
+        mime_type = mimetypes.guess_type(str(artwork_path))[0] or 'image/jpeg'
+
+        # Store in cache
+        with _artwork_cache_lock:
+            if len(_artwork_cache) >= ARTWORK_CACHE_MAX_SIZE:
+                keys = list(_artwork_cache.keys())[:len(_artwork_cache) // 2]
+                for k in keys:
+                    del _artwork_cache[k]
+            _artwork_cache[cache_key] = (content, mime_type)
+
+        return (content, mime_type)
+    except Exception:
+        return (None, None)
+
 
 def find_artwork_in_directory(directory: Path):
     """Find artwork file in the given directory."""
@@ -196,13 +245,9 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
                 audio_file = Path(audio_path)
 
                 if audio_file.exists() and audio_file.is_file():
-                    artwork = find_artwork_in_directory(audio_file.parent)
-                    if artwork:
-                        with open(artwork, 'rb') as f:
-                            content = f.read()
-
-                        mime_type = mimetypes.guess_type(str(artwork))[0] or 'image/jpeg'
-
+                    # Use cached artwork lookup
+                    content, mime_type = get_cached_artwork(audio_file.parent)
+                    if content:
                         self.send_response(200)
                         self.send_header('Content-type', mime_type)
                         self.send_header('Content-Length', str(len(content)))
@@ -233,13 +278,10 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
                 try:
                     audio_file = Path(audio_path)
                     if audio_file.exists() and audio_file.is_file():
-                        artwork = find_artwork_in_directory(audio_file.parent)
-                        if artwork:
-                            with open(artwork, 'rb') as f:
-                                content = f.read()
-
+                        content, mime_type = get_cached_artwork(audio_file.parent)
+                        if content:
                             self.send_response(200)
-                            self.send_header('Content-type', mimetypes.guess_type(str(artwork))[0] or 'image/jpeg')
+                            self.send_header('Content-type', mime_type)
                             self.send_header('Content-Length', str(len(content)))
                             self.send_header('Cache-Control', 'public, max-age=86400')
                             self.end_headers()
@@ -362,7 +404,7 @@ class ThreadingHTTPServer(ThreadingMixIn, socketserver.TCPServer):
 
 
 if __name__ == "__main__":
-    logger.info("foo_nsync Server v1.0.1")
+    logger.info("foo_nsync Server v1.0.2")
     logger.info(f"Config directory: {CONFIG_DIR}")
     logger.info(f"Playlist directory: {PLAYLIST_DIR}")
     logger.info(f"Bind address: {BIND_ADDRESS}:{PORT}")
