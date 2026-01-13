@@ -1,4 +1,4 @@
-# foo_nsync
+# foo_nsync (Playlist Sync)
 
 A native **foobar2000 component** that synchronizes playlists from a remote server and enables direct HTTP streaming playback with album art support.
 
