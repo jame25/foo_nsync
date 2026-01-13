@@ -2,11 +2,45 @@
 #include "artwork_extractor.h"
 #include "guids.h"
 #include <set>
+#include <map>
 #include <mutex>
+#include <list>
 
 // Simple cache to avoid repeated failed requests
 static std::set<pfc::string8> g_failed_urls;
 static std::mutex g_failed_urls_mutex;
+
+// LRU cache for successful artwork fetches (persists across track changes)
+static const size_t ARTWORK_CACHE_MAX_SIZE = 100;
+static std::map<pfc::string8, album_art_data_ptr> g_artwork_cache;
+static std::list<pfc::string8> g_artwork_lru;  // Front = most recent
+static std::mutex g_artwork_cache_mutex;
+
+static album_art_data_ptr get_cached_artwork(const char* artwork_url) {
+    std::lock_guard<std::mutex> lock(g_artwork_cache_mutex);
+    auto it = g_artwork_cache.find(pfc::string8(artwork_url));
+    if (it != g_artwork_cache.end()) {
+        // Move to front of LRU list
+        g_artwork_lru.remove(pfc::string8(artwork_url));
+        g_artwork_lru.push_front(pfc::string8(artwork_url));
+        return it->second;
+    }
+    return nullptr;
+}
+
+static void cache_artwork(const char* artwork_url, album_art_data_ptr art) {
+    std::lock_guard<std::mutex> lock(g_artwork_cache_mutex);
+
+    // Evict oldest if at capacity
+    while (g_artwork_cache.size() >= ARTWORK_CACHE_MAX_SIZE && !g_artwork_lru.empty()) {
+        pfc::string8 oldest = g_artwork_lru.back();
+        g_artwork_lru.pop_back();
+        g_artwork_cache.erase(oldest);
+    }
+
+    g_artwork_cache[pfc::string8(artwork_url)] = art;
+    g_artwork_lru.push_front(pfc::string8(artwork_url));
+}
 
 static bool is_url_failed(const char* url) {
     std::lock_guard<std::mutex> lock(g_failed_urls_mutex);
@@ -27,8 +61,15 @@ class nsync_artwork_initquit : public initquit {
 public:
     void on_init() override {}
     void on_quit() override {
-        std::lock_guard<std::mutex> lock(g_failed_urls_mutex);
-        g_failed_urls.clear();
+        {
+            std::lock_guard<std::mutex> lock(g_failed_urls_mutex);
+            g_failed_urls.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_artwork_cache_mutex);
+            g_artwork_cache.clear();
+            g_artwork_lru.clear();
+        }
     }
 };
 static initquit_factory_t<nsync_artwork_initquit> g_artwork_initquit;
@@ -81,7 +122,7 @@ album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, a
         throw exception_album_art_not_found();
     }
 
-    // Return cached art if available
+    // Return instance-level cached art if available
     if (m_cache_checked) {
         if (m_cached_art.is_valid()) {
             return m_cached_art;
@@ -90,6 +131,13 @@ album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, a
     }
 
     m_cache_checked = true;
+
+    // Check global cache first (fast path - no HTTP request needed)
+    album_art_data_ptr cached = get_cached_artwork(m_artwork_url.c_str());
+    if (cached.is_valid()) {
+        m_cached_art = cached;
+        return m_cached_art;
+    }
 
     // Check if this URL previously failed (avoid repeated timeouts)
     if (is_url_failed(m_artwork_url.c_str())) {
@@ -112,6 +160,9 @@ album_art_data_ptr nsync_artwork_extractor_instance::query(const GUID& p_what, a
 
     // Create album art data from the fetched image
     m_cached_art = album_art_data_impl::g_create(image_data.get_ptr(), image_data.get_size());
+
+    // Store in global cache for future tracks in the same album
+    cache_artwork(m_artwork_url.c_str(), m_cached_art);
 
     return m_cached_art;
 }
