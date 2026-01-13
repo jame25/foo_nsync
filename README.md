@@ -17,7 +17,7 @@ A native **foobar2000 component** that synchronizes playlists from a remote serv
 
 The system consists of two parts:
 
-### Server (`playlist_sync/server`)
+### Server (`server`)
 
 A Python-based multi-threaded HTTP service that:
 *   Generates `.m3u8` playlists from your music directories.
