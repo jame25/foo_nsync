@@ -362,7 +362,7 @@ class ThreadingHTTPServer(ThreadingMixIn, socketserver.TCPServer):
 
 
 if __name__ == "__main__":
-    logger.info("foo_nsync Server v1.0")
+    logger.info("foo_nsync Server v1.0.1")
     logger.info(f"Config directory: {CONFIG_DIR}")
     logger.info(f"Playlist directory: {PLAYLIST_DIR}")
     logger.info(f"Bind address: {BIND_ADDRESS}:{PORT}")
