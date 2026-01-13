@@ -15,13 +15,6 @@ nsync_http_client::nsync_http_client() {
         WINHTTP_NO_PROXY_BYPASS,
         0
     );
-
-    if (m_session) {
-        console::formatter() << "foo_nsync [http]: WinHTTP session initialized successfully";
-    } else {
-        DWORD err = GetLastError();
-        console::formatter() << "foo_nsync [http]: WinHTTP session FAILED to initialize, error " << (int)err;
-    }
 }
 
 nsync_http_client::~nsync_http_client() {
@@ -68,43 +61,34 @@ bool url_parts::parse(const char* url, url_parts& out) {
 }
 
 bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pfc::string8& out_error) {
-    console::formatter() << "foo_nsync [http]: get_sync URL: " << url;
-
     if (!m_session) {
         out_error = "HTTP session not initialized";
-        console::formatter() << "foo_nsync [http]: Session is NULL!";
         return false;
     }
 
     url_parts parts;
     if (!url_parts::parse(url, parts)) {
         out_error = "Invalid URL";
-        console::formatter() << "foo_nsync [http]: Failed to parse URL";
         return false;
     }
 
-    console::formatter() << "foo_nsync [http]: Connecting to " << parts.host << ":" << parts.port;
-    
     // Convert host to wide string
     pfc::stringcvt::string_wide_from_utf8 wide_host(parts.host.c_str());
     pfc::stringcvt::string_wide_from_utf8 wide_path(parts.path.c_str());
-    
+
     HINTERNET hConnect = WinHttpConnect(
         m_session,
         wide_host.get_ptr(),
         parts.port,
         0
     );
-    
+
     if (!hConnect) {
         DWORD err = GetLastError();
         out_error.reset();
         out_error << "Connection failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Connected, opening request...";
 
     DWORD flags = (parts.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
 
@@ -123,11 +107,8 @@ bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pf
         WinHttpCloseHandle(hConnect);
         out_error.reset();
         out_error << "Request creation failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Request opened, sending...";
 
     // Set timeouts (5 seconds)
     DWORD timeout = 5000;
@@ -145,12 +126,8 @@ bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pf
         0
     );
 
-    console::formatter() << "foo_nsync [http]: SendRequest returned " << (bResults ? "TRUE" : "FALSE");
-
     if (bResults) {
-        console::formatter() << "foo_nsync [http]: Waiting for response...";
         bResults = WinHttpReceiveResponse(hRequest, NULL);
-        console::formatter() << "foo_nsync [http]: ReceiveResponse returned " << (bResults ? "TRUE" : "FALSE");
     }
 
     if (!bResults) {
@@ -159,7 +136,6 @@ bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pf
         WinHttpCloseHandle(hConnect);
         out_error.reset();
         out_error << "Request failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
 
@@ -175,14 +151,11 @@ bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pf
         WINHTTP_NO_HEADER_INDEX
     );
 
-    console::formatter() << "foo_nsync [http]: HTTP status code: " << (int)statusCode;
-
     if (statusCode != 200) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         out_error.reset();
         out_error << "HTTP " << (int)statusCode;
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
     
@@ -212,22 +185,16 @@ bool nsync_http_client::get_sync(const char* url, pfc::string8& out_response, pf
 }
 
 bool nsync_http_client::get_binary_sync(const char* url, pfc::array_t<uint8_t>& out_data, pfc::string8& out_error) {
-    console::formatter() << "foo_nsync [http]: get_binary_sync URL: " << url;
-
     if (!m_session) {
         out_error = "HTTP session not initialized";
-        console::formatter() << "foo_nsync [http]: Session is NULL!";
         return false;
     }
 
     url_parts parts;
     if (!url_parts::parse(url, parts)) {
         out_error = "Invalid URL";
-        console::formatter() << "foo_nsync [http]: Failed to parse URL";
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Connecting to " << parts.host << ":" << parts.port << " path: " << parts.path;
 
     // Convert host to wide string
     pfc::stringcvt::string_wide_from_utf8 wide_host(parts.host.c_str());
@@ -244,11 +211,8 @@ bool nsync_http_client::get_binary_sync(const char* url, pfc::array_t<uint8_t>& 
         DWORD err = GetLastError();
         out_error.reset();
         out_error << "Connection failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Connected, opening request...";
 
     DWORD flags = (parts.scheme == "https") ? WINHTTP_FLAG_SECURE : 0;
 
@@ -267,19 +231,14 @@ bool nsync_http_client::get_binary_sync(const char* url, pfc::array_t<uint8_t>& 
         WinHttpCloseHandle(hConnect);
         out_error.reset();
         out_error << "Request creation failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Request opened, setting timeouts...";
 
     // Set timeouts (2 seconds for artwork - must be fast to not block UI)
     DWORD timeout = 2000;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
     WinHttpSetOption(hRequest, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-
-    console::formatter() << "foo_nsync [http]: Sending request...";
 
     BOOL bResults = WinHttpSendRequest(
         hRequest,
@@ -291,12 +250,8 @@ bool nsync_http_client::get_binary_sync(const char* url, pfc::array_t<uint8_t>& 
         0
     );
 
-    console::formatter() << "foo_nsync [http]: SendRequest returned " << (bResults ? "TRUE" : "FALSE");
-
     if (bResults) {
-        console::formatter() << "foo_nsync [http]: Waiting for response...";
         bResults = WinHttpReceiveResponse(hRequest, NULL);
-        console::formatter() << "foo_nsync [http]: ReceiveResponse returned " << (bResults ? "TRUE" : "FALSE");
     }
 
     if (!bResults) {
@@ -305,11 +260,8 @@ bool nsync_http_client::get_binary_sync(const char* url, pfc::array_t<uint8_t>& 
         WinHttpCloseHandle(hConnect);
         out_error.reset();
         out_error << "Request failed (error " << (int)err << ")";
-        console::formatter() << "foo_nsync [http]: " << out_error;
         return false;
     }
-
-    console::formatter() << "foo_nsync [http]: Got response, checking status...";
 
     // Check status code
     DWORD statusCode = 0;
