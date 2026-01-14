@@ -4,6 +4,33 @@ A native **foobar2000 component** that synchronizes playlists from a remote serv
 
 `foo_nsync` is designed to solve the problem of playing your home music collection remotely without complex VPNs, SMB shares, or manual playlist management. It treats the server as the "Source of Truth" for playlists and streams the audio files directly over HTTP.
 
+## Why HTTP Streaming Over SMB/Network Shares?
+
+Traditional SMB/CIFS network shares are designed for local networks and become painful for remote music playback. foo_nsync solves these problems with a purpose-built HTTP streaming architecture:
+
+| Challenge | SMB Network Share | foo_nsync |
+|-----------|-------------------|-----------|
+| **Seeking in large files** | Must buffer entire file before seeking | Instant seeking via HTTP Range requests (206 Partial Content) |
+| **Network setup** | Drive mapping, Windows credentials, persistent mounts | Just a URL - works anywhere |
+| **Firewall compatibility** | Port 445 often blocked on corporate/public networks | Standard HTTP ports (80/443) work everywhere |
+| **Bandwidth efficiency** | Re-downloads on every connection/seek | Hash-based change detection; only syncs when playlists change |
+| **Connection stability** | Stateful connections fail on network interruption | Stateless HTTP requests recover gracefully |
+| **Remote access** | Requires VPN or complex port forwarding | Direct HTTP access through any firewall |
+
+### Key Technical Advantages
+
+**Instant Seeking in Large Files**
+SMB buffers entire files before playback. With a 500MB FLAC file, seeking to the 75% mark over SMB means downloading 500MB first. foo_nsync uses HTTP Range requests - seeking to 75% downloads only the remaining 25%, saving 375MB of bandwidth per seek.
+
+**Bandwidth-Efficient Sync**
+Instead of scanning thousands of files for changes, the client fetches a 32-byte hash. Playlists only download when content actually changes. Monthly overhead for polling a 1,000-track playlist every minute: under 1MB.
+
+**Zero Network Configuration**
+No drive letters, no Windows credentials, no SMB protocol negotiation. Enter a URL like `http://192.168.1.50:8090` and you're streaming. Works identically whether you're on your home LAN or halfway around the world.
+
+**Optimized Artwork Delivery**
+Server-side LRU cache (500 directories) and client-side cache (100 albums) means album art loads instantly for consecutive tracks. Failed lookups are cached to prevent repeated timeout delays.
+
 ## Features
 
 *   **Remote Playlist Synchronization**: Automatically pulls `.m3u8` playlists from a remote server.
