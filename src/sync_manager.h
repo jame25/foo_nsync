@@ -42,6 +42,7 @@ private:
     void stop_timer();
     
     void check_and_sync_job(size_t job_index);
+    void check_hash_and_download(size_t job_index, bool success, const pfc::string8& response, const pfc::string8& error);
     void update_playlist(const SyncJob& job, const pfc::string8& playlist_content);
     
     // Parse m3u8 content into file paths
