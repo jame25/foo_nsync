@@ -86,23 +86,184 @@ def find_artwork(directory: Path) -> Optional[Path]:
     return None
 
 
-def scan_directory(directory: str, recursive: bool = True) -> List[str]:
-    """Scan a directory for audio files and return sorted list of paths."""
+def scan_directory(directory: str, recursive: bool = True, recently_added_days: int = None) -> List[str]:
+    """Scan a directory for audio files and return sorted list of paths.
+
+    Args:
+        directory: Path to scan
+        recursive: Whether to scan subdirectories
+        recently_added_days: If set, only include files modified within this many days
+    """
     files = []
     dir_path = Path(directory)
-    
+
     if not dir_path.exists():
         logger.warning(f"Directory does not exist: {directory}")
         return files
-    
+
+    # Calculate cutoff time if filtering by recency
+    cutoff_time = None
+    if recently_added_days is not None and recently_added_days > 0:
+        cutoff_time = time.time() - (recently_added_days * 24 * 60 * 60)
+
     pattern = '**/*' if recursive else '*'
-    
+
     for file_path in dir_path.glob(pattern):
         if file_path.is_file() and file_path.suffix.lower() in AUDIO_EXTENSIONS:
+            # Filter by modification time if cutoff is set
+            if cutoff_time is not None:
+                try:
+                    mtime = file_path.stat().st_mtime
+                    if mtime < cutoff_time:
+                        continue  # File is older than cutoff, skip it
+                except OSError:
+                    continue  # Can't stat file, skip it
+
             files.append(str(file_path))
-    
-    files.sort()
+
+    # Sort by modification time (newest first) for recently_added playlists
+    if cutoff_time is not None:
+        files.sort(key=lambda f: Path(f).stat().st_mtime, reverse=True)
+    else:
+        files.sort()
+
     return files
+
+
+def parse_existing_playlist(playlist_path: Path) -> List[str]:
+    """Parse an existing m3u8 playlist and extract the file paths."""
+    import urllib.parse
+
+    existing_files = []
+    if not playlist_path.exists():
+        return existing_files
+
+    try:
+        with open(playlist_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                # Lines are in format /stream/path/to/file.ext (URL-encoded)
+                if line.startswith('/stream'):
+                    # Decode the URL-encoded path
+                    decoded_path = urllib.parse.unquote(line[7:])  # Remove '/stream' prefix
+                    existing_files.append(decoded_path)
+    except Exception as e:
+        logger.warning(f"Could not parse existing playlist {playlist_path}: {e}")
+
+    return existing_files
+
+
+def incremental_update_playlist(name: str, source_path: str, output_dir: str,
+                                recursive: bool = True, include_artwork: bool = True,
+                                extimg_tags: bool = True, recently_added_days: int = None) -> Dict:
+    """
+    Incrementally update a playlist - adds new files and removes deleted files.
+
+    Args:
+        recently_added_days: If set, only include files modified within this many days.
+                            For "recently added" playlists that show only new content.
+
+    Returns a dict with:
+        - 'added': list of newly added files
+        - 'removed': list of removed files
+        - 'updated': bool indicating if playlist was modified
+        - 'total': total files in playlist after update
+    """
+    import urllib.parse
+
+    output_path = Path(output_dir) / f"{name}.m3u8"
+
+    # Get existing files from playlist
+    existing_files = set(parse_existing_playlist(output_path))
+
+    # Scan directory for current files (with optional recency filter)
+    current_files = scan_directory(source_path, recursive, recently_added_days)
+    current_files_set = set(current_files)
+
+    # Find new files (in directory but not in playlist)
+    new_files = [f for f in current_files if f not in existing_files]
+    new_files.sort()
+
+    # Find removed files (in playlist but not in directory)
+    removed_files = [f for f in existing_files if f not in current_files_set]
+    removed_files.sort()
+
+    # Include sample paths for debugging path mismatches
+    sample_existing = next(iter(existing_files), None) if existing_files else None
+    sample_scanned = current_files[0] if current_files else None
+
+    result = {
+        'added': new_files,
+        'removed': removed_files,
+        'updated': False,
+        'total': len(current_files),
+        'existing_count': len(existing_files),
+        'scanned_count': len(current_files),
+        'sample_existing': sample_existing,
+        'sample_scanned': sample_scanned
+    }
+
+    # No changes needed
+    if not new_files and not removed_files:
+        return result
+
+    # If there are removals, we need to regenerate the playlist with current files only
+    # If only additions, we can append for efficiency
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if removed_files:
+            # Regenerate playlist with only current files
+            generate_playlist(name, current_files, output_dir, include_artwork, extimg_tags)
+            result['updated'] = True
+        elif new_files:
+            # Only additions - append new entries
+            new_entries = []
+            last_artwork_path = None
+
+            for f in new_files:
+                file_path = Path(f)
+
+                artwork_path = None
+                if include_artwork:
+                    if last_artwork_path is None or last_artwork_path.parent != file_path.parent:
+                        artwork_path = find_artwork(file_path.parent)
+                        if artwork_path:
+                            last_artwork_path = artwork_path
+                    else:
+                        artwork_path = last_artwork_path
+
+                if artwork_path and extimg_tags:
+                    quoted_artwork = urllib.parse.quote(str(artwork_path))
+                    new_entries.append(f"#EXTIMG:/stream{quoted_artwork}")
+
+                track_name = file_path.stem
+                new_entries.append(f"#EXTINF:-1,{track_name}")
+
+                quoted_file = urllib.parse.quote(f)
+                new_entries.append(f"/stream{quoted_file}")
+
+            # Append to existing playlist
+            if output_path.exists():
+                with open(output_path, 'r', encoding='utf-8') as f:
+                    existing_content = f.read().rstrip('\n')
+            else:
+                existing_content = "#EXTM3U"
+
+            new_content = existing_content + '\n' + '\n'.join(new_entries) + '\n'
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            result['updated'] = True
+
+    except Exception as e:
+        logger.error(f"Failed to update playlist '{name}': {e}")
+
+    return result
 
 
 def generate_playlist(name: str, files: List[str], output_dir: str, include_artwork: bool = True,
