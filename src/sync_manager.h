@@ -4,7 +4,6 @@
 #include "config.h"
 
 // Manages playlist sync polling and updates
-// Manages playlist sync polling and updates
 class sync_manager {
 public:
     static sync_manager& get();
