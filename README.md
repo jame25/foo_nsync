@@ -34,6 +34,8 @@ Server-side LRU cache (500 directories) and client-side cache (100 albums) means
 ## Features
 
 *   **Remote Playlist Synchronization**: Automatically pulls `.m3u8` playlists from a remote server.
+*   **Incremental Sync**: Only processes new and removed files—never re-downloads or re-processes existing tracks.
+*   **Recently Added Playlists**: Create dynamic playlists that only show files added within a configurable time window.
 *   **Zero-Config Streaming**: No need to map network drives. The component automatically detects server paths and streams them via HTTP.
 *   **Album Art Support**: Automatically fetches and displays album art in foobar2000's Default UI artwork panel.
 *   **Smart Updates**: Only downloads playlists when the server hash changes (bandwidth efficient).
@@ -68,6 +70,7 @@ A C++ component for foobar2000 that:
 | `GET /list` | Returns JSON array of available playlist names |
 | `GET /hash/{name}` | Returns MD5 hash of playlist (for change detection) |
 | `GET /playlist/{name}` | Downloads the .m3u8 playlist file |
+| `POST /sync/{name}` | Triggers incremental playlist update (adds new files, removes deleted) |
 | `GET /stream/{path}` | Streams an audio file (supports Range requests) |
 | `GET /artwork/{path}` | Returns album art for the audio file's directory |
 
@@ -107,10 +110,17 @@ python main.py
        "sources": [
            {"name": "music", "path": "/mnt/Music1", "recursive": true},
            {"name": "more_music", "path": "/mnt/Music2", "recursive": true},
-           {"name": "even_more_music", "path": "/mnt/Music3", "recursive": true}
+           {"name": "even_more_music", "path": "/mnt/Music3", "recursive": true},
+           {"name": "recently_added", "path": "/mnt/Music1", "recursive": true, "recently_added_days": 30}
        ]
    }
    ```
+
+   **Source Options:**
+   - `name`: Playlist name (becomes `{name}.m3u8`)
+   - `path`: Directory to scan for audio files
+   - `recursive`: Include subdirectories (default: `true`)
+   - `recently_added_days`: Only include files modified within this many days (optional)
 
 4. **Important**: If you have fewer than 3 music directories, comment out the unused `MUSIC_DIR_*` lines in `.env` **and** the corresponding volume mounts in `docker-compose.yml`.
 
@@ -154,6 +164,38 @@ Album art is automatically fetched when playing tracks from the server. The serv
 To display artwork in foobar2000:
 1.  Enable the Album Art panel: **View > Default UI > Album Art**
 2.  Play a track from a synced playlist
+
+## Recently Added Playlists
+
+Create a playlist that automatically contains only files added within a specific time window. Perfect for keeping track of new additions to your library.
+
+### Configuration
+
+Add a source with the `recently_added_days` option:
+
+```json
+{
+    "name": "recently_added",
+    "path": "/mnt/Music",
+    "recursive": true,
+    "recently_added_days": 30
+}
+```
+
+### Behavior
+
+- Files are filtered by their modification time (`mtime`)
+- Playlist is sorted newest-first
+- Files automatically "age out" when they exceed the time window
+- On each sync, old files are removed and new files are added
+
+### Example
+
+With `recently_added_days: 30`:
+- Day 1: You add an album → it appears in the playlist
+- Day 31: The album automatically disappears from the playlist (aged out)
+
+This creates a rolling window of your recent additions without manual curation.
 
 ## Troubleshooting
 
