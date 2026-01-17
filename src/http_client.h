@@ -23,7 +23,13 @@ public:
 
     // Sync GET for binary data (images, etc.)
     bool get_binary_sync(const char* url, pfc::array_t<uint8_t>& out_data, pfc::string8& out_error);
-    
+
+    // Async POST request - callback invoked on main thread
+    void post_async(const char* url, completion_callback callback);
+
+    // Sync POST for simple cases (blocks calling thread)
+    bool post_sync(const char* url, pfc::string8& out_response, pfc::string8& out_error);
+
 private:
     nsync_http_client();
     ~nsync_http_client();
