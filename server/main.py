@@ -142,6 +142,79 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         self.handle_request(send_body=False)
 
+    def do_POST(self):
+        """Handle POST requests for on-demand sync operations."""
+        if self.path.startswith('/sync/'):
+            playlist_name = self.path[6:]  # Remove '/sync/'
+
+            try:
+                # Load config to find the source for this playlist
+                from generate_playlists import load_config as load_generator_config, incremental_update_playlist
+                generator_config = load_generator_config()
+
+                # Find the source configuration for this playlist
+                source = None
+                for s in generator_config.get("sources", []):
+                    if s.get("name") == playlist_name:
+                        source = s
+                        break
+
+                if not source:
+                    self.send_response(404)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "error": f"No source configured for playlist '{playlist_name}'"
+                    }).encode())
+                    return
+
+                # Perform incremental update
+                output_dir = generator_config.get("playlist_dir", PLAYLIST_DIR)
+                include_artwork = generator_config.get("include_artwork", True)
+
+                result = incremental_update_playlist(
+                    name=playlist_name,
+                    source_path=source.get("path"),
+                    output_dir=output_dir,
+                    recursive=source.get("recursive", True),
+                    include_artwork=include_artwork,
+                    recently_added_days=source.get("recently_added_days")
+                )
+
+                response_data = {
+                    "playlist": playlist_name,
+                    "updated": result["updated"],
+                    "added_count": len(result["added"]),
+                    "removed_count": len(result.get("removed", [])),
+                    "total": result["total"],
+                    "existing_count": result.get("existing_count", 0),
+                    "scanned_count": result.get("scanned_count", 0),
+                    "added_files": [Path(f).name for f in result["added"][:20]],
+                    "removed_files": [Path(f).name for f in result.get("removed", [])[:20]],
+                    "recently_added_days": source.get("recently_added_days")
+                }
+
+                # Include sample paths if no changes found (helps debug path mismatches)
+                if len(result["added"]) == 0 and len(result.get("removed", [])) == 0:
+                    response_data["sample_existing"] = result.get("sample_existing")
+                    response_data["sample_scanned"] = result.get("sample_scanned")
+
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(response_data).encode())
+
+            except Exception as e:
+                logger.error(f"Sync error for '{playlist_name}': {e}")
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        else:
+            self.send_error(404, "POST endpoint not found")
+
     def handle_request(self, send_body=True):
         if self.path == '/status':
             self.send_response(200)
@@ -404,26 +477,46 @@ class ThreadingHTTPServer(ThreadingMixIn, socketserver.TCPServer):
 
 
 if __name__ == "__main__":
-    logger.info("foo_nsync Server v1.0.2")
+    logger.info("foo_nsync Server v1.0.3")
     logger.info(f"Config directory: {CONFIG_DIR}")
     logger.info(f"Playlist directory: {PLAYLIST_DIR}")
     logger.info(f"Bind address: {BIND_ADDRESS}:{PORT}")
-    logger.info("Endpoints: /status, /list, /hash/{name}, /playlist/{name}, /artwork/{path}")
+    logger.info("Endpoints: /status, /list, /hash/{name}, /playlist/{name}, /artwork/{path}, POST /sync/{name}")
     
-    # Generate playlists on startup
+    # Check playlists on startup - only create if missing, never full regenerate
     try:
-        from generate_playlists import load_config as load_generator_config, process_sources
+        from generate_playlists import load_config as load_generator_config, generate_playlist, scan_directory
         generator_config = load_generator_config()
-        if generator_config.get("sources"):
-            logger.info("Generating playlists on startup...")
-            updated = process_sources(generator_config)
-            logger.info(f"Startup generation complete: {updated} playlist(s) updated")
+        sources = generator_config.get("sources", [])
+        output_dir = generator_config.get("playlist_dir", PLAYLIST_DIR)
+        include_artwork = generator_config.get("include_artwork", True)
+
+        if sources:
+            for source in sources:
+                name = source.get("name")
+                path = source.get("path")
+                recursive = source.get("recursive", True)
+
+                if not name or not path:
+                    continue
+
+                playlist_file = Path(output_dir) / f"{name}.m3u8"
+                recently_added_days = source.get("recently_added_days")
+
+                if not playlist_file.exists():
+                    # Only generate if playlist doesn't exist
+                    logger.info(f"Creating missing playlist '{name}'...")
+                    files = scan_directory(path, recursive, recently_added_days)
+                    if files:
+                        generate_playlist(name, files, output_dir, include_artwork)
+                else:
+                    logger.info(f"Playlist '{name}' exists, skipping startup generation")
         else:
-            logger.info("No playlist sources configured, skipping startup generation")
+            logger.info("No playlist sources configured")
     except ImportError:
-        logger.warning("generate_playlists.py not found, skipping startup generation")
+        logger.warning("generate_playlists.py not found, skipping startup check")
     except Exception as e:
-        logger.error(f"Error during startup playlist generation: {e}")
+        logger.error(f"Error during startup playlist check: {e}")
     
     with ThreadingHTTPServer((BIND_ADDRESS, PORT), SyncHandler) as httpd:
         logger.info("Server is multi-threaded - can handle concurrent requests")
