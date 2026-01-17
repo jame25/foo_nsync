@@ -15,6 +15,12 @@
             "name": "even_more_music",
             "path": "/mnt/Music3",
             "recursive": true
+        },
+        {
+            "name": "recently_added",
+            "path": "/mnt/Music1",
+            "recursive": true,
+            "recently_added_days": 30
         }
     ]
 }
