@@ -39,7 +39,7 @@ Server-side LRU cache (500 directories) and client-side cache (100 albums) means
 *   **Zero-Config Streaming**: No need to map network drives. The component automatically detects server paths and streams them via HTTP.
 *   **Album Art Support**: Automatically fetches and displays album art in foobar2000's Default UI artwork panel.
 *   **Smart Updates**: Only downloads playlists when the server hash changes (bandwidth efficient).
-*   **Resilience**: Automatically detects if a playlist is missing in foobar2000 and restores it.
+*   **Resilience & Local Caching**: Automatically saves `.m3u8` playlists locally to `%PROFILE%/foo_nsync_data/`.
 *   **Progress UI**: Real-time status updates ("Checking...", "Downloading...", "Updating...") in Preferences.
 
 ## Architecture
@@ -59,6 +59,7 @@ A Python-based multi-threaded HTTP service that:
 A C++ component for foobar2000 that:
 *   Polls the server for playlist changes.
 *   Downloads playlists and adds them to foobar2000.
+*   Persists transformed `.m3u8` files locally under `%PROFILE%/foo_nsync_data/` for crash recovery and instant startup.
 *   Implements `album_art_extractor` and `album_art_fallback` services for artwork display.
 *   Transparently handles playback URL construction.
 
