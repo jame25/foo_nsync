@@ -30,6 +30,9 @@ void sync_manager::start() {
     m_syncing.resize(config.get_job_count(), false);
 
     if (config.is_enabled() && config.get_job_count() > 0) {
+        // Restore missing/empty playlists from local disk cache on startup
+        restore_playlists_from_cache();
+
         start_timer();
         // Initial sync on startup
         sync_all();
@@ -179,12 +182,19 @@ void sync_manager::check_hash_and_download(size_t job_index, bool success, const
         return;
     }
 
-    // Check if hash changed
+    // Check if playlist exists, is non-empty, and if local cache file exists on disk
     bool force_update = false;
+    auto api = playlist_manager::get();
+    size_t idx = api->find_playlist(job.target_playlist, pfc_infinite);
+    
+    pfc::string8 cache_file = get_cache_file_path(job.target_playlist.c_str());
+    abort_callback_dummy abort;
+    bool cache_exists = false;
+    try {
+        cache_exists = filesystem::g_exists(cache_file, abort);
+    } catch(...) {}
 
-    // Check if playlist actually exists
-    size_t idx = playlist_manager::get()->find_playlist(job.target_playlist, pfc_infinite);
-    if (idx == pfc_infinite) {
+    if (idx == pfc_infinite || api->playlist_get_item_count(idx) == 0 || !cache_exists) {
         force_update = true;
     }
 
@@ -375,6 +385,105 @@ void sync_manager::update_playlist(const SyncJob& job, const pfc::string8& playl
             new_locations.add_item(new_paths_storage[i].c_str());
         }
         api->playlist_add_locations(playlist_index, new_locations, false, nullptr);
+    }
+
+    // Save to local disk cache (.m3u8 in %PROFILE%/foo_nsync_data)
+    save_playlist_cache(job.target_playlist.c_str(), file_paths);
+}
+
+pfc::string8 sync_manager::get_cache_dir_path() {
+    return core_api::pathInProfile("foo_nsync_data");
+}
+
+pfc::string8 sync_manager::get_cache_file_path(const char* playlist_name) {
+    pfc::string8 file_name;
+    file_name << playlist_name << ".m3u8";
+    
+    pfc::string8 file_path = get_cache_dir_path();
+    file_path.add_filename(file_name.c_str());
+    return file_path;
+}
+
+bool sync_manager::save_playlist_cache(const char* playlist_name, const pfc::list_t<pfc::string8>& file_paths) {
+    try {
+        abort_callback_dummy abort;
+        pfc::string8 dir = get_cache_dir_path();
+        
+        auto fs = filesystem::get(dir);
+        try {
+            fs->make_directory(dir, abort);
+        } catch (...) {}
+
+        pfc::string8 file_path = get_cache_file_path(playlist_name);
+        file::ptr f;
+        filesystem::g_open_write_new(f, file_path, abort);
+
+        pfc::string8 content;
+        content << "#EXTM3U\r\n";
+        for (size_t i = 0; i < file_paths.get_count(); ++i) {
+            content << file_paths[i] << "\r\n";
+        }
+
+        f->write_object(content.c_str(), content.length(), abort);
+        console::formatter() << "foo_nsync: Saved local playlist cache to " << file_path;
+        return true;
+    } catch (const std::exception& e) {
+        console::formatter() << "foo_nsync: Error saving cache: " << e.what();
+        return false;
+    } catch (...) {
+        console::formatter() << "foo_nsync: Error saving cache file";
+        return false;
+    }
+}
+
+bool sync_manager::load_playlist_cache(const char* playlist_name, pfc::list_t<pfc::string8>& out_paths) {
+    try {
+        abort_callback_dummy abort;
+        pfc::string8 file_path = get_cache_file_path(playlist_name);
+
+        file::ptr f;
+        filesystem::g_open(f, file_path, filesystem::open_mode_read, abort);
+
+        t_filesize size = f->get_size(abort);
+        if (size == 0 || size == filesize_invalid) {
+            return false;
+        }
+
+        pfc::string8 content;
+        char* buffer = content.lock_buffer(static_cast<size_t>(size));
+        f->read_object(buffer, static_cast<size_t>(size), abort);
+        content.unlock_buffer();
+
+        parse_m3u8(content, out_paths);
+        return out_paths.get_count() > 0;
+    } catch (...) {
+        return false;
+    }
+}
+
+void sync_manager::restore_playlists_from_cache() {
+    auto& config = sync_config::get();
+    auto api = playlist_manager::get();
+
+    for (size_t i = 0; i < config.get_job_count(); ++i) {
+        const auto& job = config.get_job(i);
+        if (!job.enabled) continue;
+
+        size_t idx = api->find_playlist(job.target_playlist.c_str(), pfc_infinite);
+        bool is_empty = (idx == pfc_infinite) || (api->playlist_get_item_count(idx) == 0);
+
+        if (is_empty) {
+            pfc::list_t<pfc::string8> cached_paths;
+            if (load_playlist_cache(job.target_playlist.c_str(), cached_paths)) {
+                size_t playlist_index = find_or_create_playlist(job.target_playlist.c_str());
+                pfc::list_t<const char*> locations;
+                for (size_t k = 0; k < cached_paths.get_count(); ++k) {
+                    locations.add_item(cached_paths[k].c_str());
+                }
+                api->playlist_add_locations(playlist_index, locations, false, nullptr);
+                console::formatter() << "foo_nsync: Restored playlist '" << job.target_playlist << "' from local cache (" << cached_paths.get_count() << " tracks)";
+            }
+        }
     }
 }
 
