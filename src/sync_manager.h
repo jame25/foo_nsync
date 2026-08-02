@@ -4,6 +4,7 @@
 #include "config.h"
 
 // Manages playlist sync polling and updates
+// Manages playlist sync polling and updates
 class sync_manager {
 public:
     static sync_manager& get();
@@ -49,6 +50,13 @@ private:
     
     // Find or create playlist by name, returns index
     size_t find_or_create_playlist(const char* name);
+    
+    // Local playlist disk caching (.m3u8 in %PROFILE%/foo_nsync_data)
+    pfc::string8 get_cache_dir_path();
+    pfc::string8 get_cache_file_path(const char* playlist_name);
+    bool save_playlist_cache(const char* playlist_name, const pfc::list_t<pfc::string8>& file_paths);
+    bool load_playlist_cache(const char* playlist_name, pfc::list_t<pfc::string8>& out_paths);
+    void restore_playlists_from_cache();
     
     UINT_PTR m_timer_id = 0;
     std::vector<bool> m_syncing;
