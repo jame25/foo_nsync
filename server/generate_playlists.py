@@ -20,6 +20,7 @@ import time
 import hashlib
 import argparse
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -42,6 +43,19 @@ ARTWORK_FILENAMES = [
     'album.jpg', 'Album.jpg', 'ALBUM.JPG',
     'albumart.jpg', 'AlbumArt.jpg', 'ALBUMART.JPG'
 ]
+
+# Thread locks per playlist to prevent concurrent heavy directory scans
+_playlist_locks = {}
+_playlist_locks_guard = threading.Lock()
+
+
+def _get_playlist_lock(name: str) -> threading.Lock:
+    """Get or create a thread lock for a given playlist name."""
+    with _playlist_locks_guard:
+        if name not in _playlist_locks:
+            _playlist_locks[name] = threading.Lock()
+        return _playlist_locks[name]
+
 
 # Setup logging
 logging.basicConfig(
@@ -77,11 +91,13 @@ def find_artwork(directory: Path) -> Optional[Path]:
         if artwork_path.exists() and artwork_path.is_file():
             return artwork_path
 
-    # Fall back to any .jpg or .png file in the directory
-    for ext in ['*.jpg', '*.jpeg', '*.png']:
-        for img_path in directory.glob(ext):
-            if img_path.is_file():
-                return img_path
+    # Fall back to any image file in the directory (single pass)
+    try:
+        for entry in directory.iterdir():
+            if entry.is_file() and entry.suffix.lower() in ('.jpg', '.jpeg', '.png'):
+                return entry
+    except Exception:
+        pass
 
     return None
 
@@ -89,15 +105,17 @@ def find_artwork(directory: Path) -> Optional[Path]:
 def scan_directory(directory: str, recursive: bool = True, recently_added_days: int = None) -> List[str]:
     """Scan a directory for audio files and return sorted list of paths.
 
+    Uses os.walk/os.scandir for high performance and low memory footprint.
+
     Args:
         directory: Path to scan
         recursive: Whether to scan subdirectories
         recently_added_days: If set, only include files modified within this many days
     """
     files = []
-    dir_path = Path(directory)
+    dir_str = str(directory)
 
-    if not dir_path.exists():
+    if not os.path.exists(dir_str):
         logger.warning(f"Directory does not exist: {directory}")
         return files
 
@@ -106,24 +124,45 @@ def scan_directory(directory: str, recursive: bool = True, recently_added_days: 
     if recently_added_days is not None and recently_added_days > 0:
         cutoff_time = time.time() - (recently_added_days * 24 * 60 * 60)
 
-    pattern = '**/*' if recursive else '*'
-
-    for file_path in dir_path.glob(pattern):
-        if file_path.is_file() and file_path.suffix.lower() in AUDIO_EXTENSIONS:
-            # Filter by modification time if cutoff is set
-            if cutoff_time is not None:
-                try:
-                    mtime = file_path.stat().st_mtime
-                    if mtime < cutoff_time:
-                        continue  # File is older than cutoff, skip it
-                except OSError:
-                    continue  # Can't stat file, skip it
-
-            files.append(str(file_path))
+    if recursive:
+        try:
+            for root, _, filenames in os.walk(dir_str):
+                for filename in filenames:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in AUDIO_EXTENSIONS:
+                        full_path = os.path.join(root, filename)
+                        if cutoff_time is not None:
+                            try:
+                                mtime = os.path.getmtime(full_path)
+                                if mtime < cutoff_time:
+                                    continue  # Skip older file
+                            except OSError:
+                                continue  # Skip un-stat-able file
+                        files.append(full_path)
+        except OSError as e:
+            logger.warning(f"Error scanning directory tree {directory}: {e}")
+    else:
+        try:
+            with os.scandir(dir_str) as entries:
+                for entry in entries:
+                    if entry.is_file():
+                        ext = os.path.splitext(entry.name)[1].lower()
+                        if ext in AUDIO_EXTENSIONS:
+                            full_path = entry.path
+                            if cutoff_time is not None:
+                                try:
+                                    mtime = entry.stat().st_mtime
+                                    if mtime < cutoff_time:
+                                        continue
+                                except OSError:
+                                    continue
+                            files.append(full_path)
+        except OSError as e:
+            logger.warning(f"Error scanning directory {directory}: {e}")
 
     # Sort by modification time (newest first) for recently_added playlists
     if cutoff_time is not None:
-        files.sort(key=lambda f: Path(f).stat().st_mtime, reverse=True)
+        files.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
     else:
         files.sort()
 
@@ -162,6 +201,8 @@ def incremental_update_playlist(name: str, source_path: str, output_dir: str,
     """
     Incrementally update a playlist - adds new files and removes deleted files.
 
+    Thread-safe: Uses a per-playlist lock to prevent concurrent heavy directory scans.
+
     Args:
         recently_added_days: If set, only include files modified within this many days.
                             For "recently added" playlists that show only new content.
@@ -172,47 +213,60 @@ def incremental_update_playlist(name: str, source_path: str, output_dir: str,
         - 'updated': bool indicating if playlist was modified
         - 'total': total files in playlist after update
     """
-    import urllib.parse
+    lock = _get_playlist_lock(name)
+    acquired = lock.acquire(blocking=False)
+    if not acquired:
+        logger.info(f"Sync already in progress for '{name}', skipping duplicate request.")
+        return {
+            'added': [],
+            'removed': [],
+            'updated': False,
+            'total': 0,
+            'status': 'in_progress',
+            'message': f"Sync already in progress for '{name}'"
+        }
 
-    output_path = Path(output_dir) / f"{name}.m3u8"
-
-    # Get existing files from playlist
-    existing_files = set(parse_existing_playlist(output_path))
-
-    # Scan directory for current files (with optional recency filter)
-    current_files = scan_directory(source_path, recursive, recently_added_days)
-    current_files_set = set(current_files)
-
-    # Find new files (in directory but not in playlist)
-    new_files = [f for f in current_files if f not in existing_files]
-    new_files.sort()
-
-    # Find removed files (in playlist but not in directory)
-    removed_files = [f for f in existing_files if f not in current_files_set]
-    removed_files.sort()
-
-    # Include sample paths for debugging path mismatches
-    sample_existing = next(iter(existing_files), None) if existing_files else None
-    sample_scanned = current_files[0] if current_files else None
-
-    result = {
-        'added': new_files,
-        'removed': removed_files,
-        'updated': False,
-        'total': len(current_files),
-        'existing_count': len(existing_files),
-        'scanned_count': len(current_files),
-        'sample_existing': sample_existing,
-        'sample_scanned': sample_scanned
-    }
-
-    # No changes needed
-    if not new_files and not removed_files:
-        return result
-
-    # If there are removals, we need to regenerate the playlist with current files only
-    # If only additions, we can append for efficiency
     try:
+        import urllib.parse
+
+        output_path = Path(output_dir) / f"{name}.m3u8"
+
+        # Get existing files from playlist
+        existing_files = set(parse_existing_playlist(output_path))
+
+        # Scan directory for current files (with optional recency filter)
+        current_files = scan_directory(source_path, recursive, recently_added_days)
+        current_files_set = set(current_files)
+
+        # Find new files (in directory but not in playlist)
+        new_files = [f for f in current_files if f not in existing_files]
+        new_files.sort()
+
+        # Find removed files (in playlist but not in directory)
+        removed_files = [f for f in existing_files if f not in current_files_set]
+        removed_files.sort()
+
+        # Include sample paths for debugging path mismatches
+        sample_existing = next(iter(existing_files), None) if existing_files else None
+        sample_scanned = current_files[0] if current_files else None
+
+        result = {
+            'added': new_files,
+            'removed': removed_files,
+            'updated': False,
+            'total': len(current_files),
+            'existing_count': len(existing_files),
+            'scanned_count': len(current_files),
+            'sample_existing': sample_existing,
+            'sample_scanned': sample_scanned
+        }
+
+        # No changes needed
+        if not new_files and not removed_files:
+            return result
+
+        # If there are removals, we need to regenerate the playlist with current files only
+        # If only additions, we can append for efficiency
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if removed_files:
@@ -260,10 +314,20 @@ def incremental_update_playlist(name: str, source_path: str, output_dir: str,
 
             result['updated'] = True
 
+        return result
+
     except Exception as e:
         logger.error(f"Failed to update playlist '{name}': {e}")
+        return {
+            'added': [],
+            'removed': [],
+            'updated': False,
+            'total': 0,
+            'error': str(e)
+        }
+    finally:
+        lock.release()
 
-    return result
 
 
 def generate_playlist(name: str, files: List[str], output_dir: str, include_artwork: bool = True,
