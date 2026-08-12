@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from functools import lru_cache
 import threading
+from collections import OrderedDict
 
 # CONFIGURATION (via environment variables)
 PORT = int(os.environ.get("PORT", 8090))
@@ -68,19 +69,20 @@ mimetypes.add_type('image/png', '.png')
 mimetypes.add_type('image/gif', '.gif')
 mimetypes.add_type('image/bmp', '.bmp')
 
-# Artwork cache - keyed by directory path, stores (content_bytes, mime_type)
-_artwork_cache = {}
+# Artwork cache - LRU keyed by directory path, stores (content_bytes, mime_type)
+_artwork_cache = OrderedDict()
 _artwork_cache_lock = threading.Lock()
-ARTWORK_CACHE_MAX_SIZE = 500  # Max cached directories
+ARTWORK_CACHE_MAX_SIZE = int(os.environ.get("ARTWORK_CACHE_MAX_SIZE", 50))  # Capped size for Pi low RAM
 
 
 def get_cached_artwork(directory: Path):
     """Get artwork from cache or load from disk. Returns (content, mime_type) or (None, None)."""
     cache_key = str(directory)
 
-    # Check cache first (fast path)
+    # Check cache first (fast path LRU)
     with _artwork_cache_lock:
         if cache_key in _artwork_cache:
+            _artwork_cache.move_to_end(cache_key)
             return _artwork_cache[cache_key]
 
     # Not in cache - find and load artwork
@@ -88,12 +90,10 @@ def get_cached_artwork(directory: Path):
     if not artwork_path:
         # Cache negative result too (avoid repeated disk scans)
         with _artwork_cache_lock:
-            if len(_artwork_cache) >= ARTWORK_CACHE_MAX_SIZE:
-                # Simple eviction: clear half the cache
-                keys = list(_artwork_cache.keys())[:len(_artwork_cache) // 2]
-                for k in keys:
-                    del _artwork_cache[k]
             _artwork_cache[cache_key] = (None, None)
+            _artwork_cache.move_to_end(cache_key)
+            if len(_artwork_cache) > ARTWORK_CACHE_MAX_SIZE:
+                _artwork_cache.popitem(last=False)
         return (None, None)
 
     # Load artwork content
@@ -102,13 +102,12 @@ def get_cached_artwork(directory: Path):
             content = f.read()
         mime_type = mimetypes.guess_type(str(artwork_path))[0] or 'image/jpeg'
 
-        # Store in cache
+        # Store in LRU cache
         with _artwork_cache_lock:
-            if len(_artwork_cache) >= ARTWORK_CACHE_MAX_SIZE:
-                keys = list(_artwork_cache.keys())[:len(_artwork_cache) // 2]
-                for k in keys:
-                    del _artwork_cache[k]
             _artwork_cache[cache_key] = (content, mime_type)
+            _artwork_cache.move_to_end(cache_key)
+            if len(_artwork_cache) > ARTWORK_CACHE_MAX_SIZE:
+                _artwork_cache.popitem(last=False)
 
         return (content, mime_type)
     except Exception:
@@ -123,11 +122,13 @@ def find_artwork_in_directory(directory: Path):
         if artwork_path.exists() and artwork_path.is_file():
             return artwork_path
 
-    # Fall back to any .jpg or .png file in the directory
-    for ext in ['*.jpg', '*.jpeg', '*.png']:
-        for img_path in directory.glob(ext):
-            if img_path.is_file():
-                return img_path
+    # Fall back to any image file in the directory (single pass)
+    try:
+        for entry in directory.iterdir():
+            if entry.is_file() and entry.suffix.lower() in ('.jpg', '.jpeg', '.png'):
+                return entry
+    except Exception:
+        pass
 
     return None
 
@@ -181,21 +182,32 @@ class SyncHandler(http.server.SimpleHTTPRequestHandler):
                     recently_added_days=source.get("recently_added_days")
                 )
 
+                if result.get("status") == "in_progress":
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "playlist": playlist_name,
+                        "status": "in_progress",
+                        "message": result.get("message", "Sync already in progress")
+                    }).encode())
+                    return
+
                 response_data = {
                     "playlist": playlist_name,
-                    "updated": result["updated"],
-                    "added_count": len(result["added"]),
+                    "updated": result.get("updated", False),
+                    "added_count": len(result.get("added", [])),
                     "removed_count": len(result.get("removed", [])),
-                    "total": result["total"],
+                    "total": result.get("total", 0),
                     "existing_count": result.get("existing_count", 0),
                     "scanned_count": result.get("scanned_count", 0),
-                    "added_files": [Path(f).name for f in result["added"][:20]],
+                    "added_files": [Path(f).name for f in result.get("added", [])[:20]],
                     "removed_files": [Path(f).name for f in result.get("removed", [])[:20]],
                     "recently_added_days": source.get("recently_added_days")
                 }
 
                 # Include sample paths if no changes found (helps debug path mismatches)
-                if len(result["added"]) == 0 and len(result.get("removed", [])) == 0:
+                if len(result.get("added", [])) == 0 and len(result.get("removed", [])) == 0:
                     response_data["sample_existing"] = result.get("sample_existing")
                     response_data["sample_scanned"] = result.get("sample_scanned")
 
@@ -477,7 +489,7 @@ class ThreadingHTTPServer(ThreadingMixIn, socketserver.TCPServer):
 
 
 if __name__ == "__main__":
-    logger.info("foo_nsync Server v1.0.3")
+    logger.info("foo_nsync Server v1.0.5")
     logger.info(f"Config directory: {CONFIG_DIR}")
     logger.info(f"Playlist directory: {PLAYLIST_DIR}")
     logger.info(f"Bind address: {BIND_ADDRESS}:{PORT}")
