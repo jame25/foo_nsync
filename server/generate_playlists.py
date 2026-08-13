@@ -65,22 +65,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Config memory cache
+_cached_config = None
+_cached_config_mtime = 0
+
+
 def load_config() -> Dict:
-    """Load configuration from config.json."""
+    """Load configuration from config.json with mtime caching."""
+    global _cached_config, _cached_config_mtime
     config_file = Path(CONFIG_DIR) / "config.json"
     
     if not config_file.exists():
-        logger.warning(f"No config.json found in {CONFIG_DIR}, using defaults")
+        if _cached_config is None:
+            logger.warning(f"No config.json found in {CONFIG_DIR}, using defaults")
         return {"sources": []}
     
     try:
+        mtime = config_file.stat().st_mtime
+        if _cached_config is not None and mtime == _cached_config_mtime:
+            return _cached_config
+
         with open(config_file, 'r') as f:
             config = json.load(f)
+            _cached_config = config
+            _cached_config_mtime = mtime
             logger.info(f"Loaded config from {config_file}")
             return config
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
-        return {"sources": []}
+        return _cached_config or {"sources": []}
 
 
 def find_artwork(directory: Path) -> Optional[Path]:
